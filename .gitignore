@@ -1,0 +1,6 @@
+source/build/
+source/managed_components/
+source/sdkconfig.old
+*.log
+.vscode/
+.idea/

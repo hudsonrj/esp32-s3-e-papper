@@ -15,7 +15,7 @@ internally unchanged so those integrations continue to work.
 
 - Flash offset: `0x0`
 - Flash size: 16 MB
-- SHA-256: `014762DBEC768D9AE442D7028337D852F36AC0C78A5659B499F4CF1735CD6A3A`
+- SHA-256: `DD29F7CB849F0CF6B03E0D9088FF516877160CACBEF9D6722AE1DD64D1522CC4`
 
 Example with esptool:
 
@@ -40,6 +40,10 @@ idf.py build
 
 The managed-component versions are pinned in `source/dependencies.lock`.
 
+The Gregorian calendar works offline and opens immediately. Lunar data remains
+optional and can be refreshed with a long press. The upstream weather service
+supports mainland China only.
+
 ## Repository layout
 
 - `source/` — translated ESP-IDF project based on Waveshare's official source
@@ -50,4 +54,3 @@ The managed-component versions are pinned in `source/dependencies.lock`.
 
 Based on the Waveshare project:
 https://github.com/waveshareteam/ESP32-AIChats
-

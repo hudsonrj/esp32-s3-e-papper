@@ -1244,19 +1244,19 @@ static void display_calendar_img(Time_data rtc_time, LunarInfo* month_info)
     Paint_DrawString_CN(734, 25, BAT_str, &Font12_UTF8, WHITE, BLACK);
 
     Paint_DrawRectangle(3, 70, 113, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(46, 74, "one", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(46, 74, "Mon", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(117, 70, 227, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(161, 74, "two", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(161, 74, "Tue", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(231, 70, 341, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(274, 74, "three", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(274, 74, "Wed", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(345, 70, 455, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(388, 74, "Four", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(388, 74, "Thu", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(459, 70, 569, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(502, 74, "five", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(502, 74, "Fri", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(573, 70, 683, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(616, 74, "six", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(616, 74, "Sat", &Font16_UTF8, BLACK, WHITE);
     Paint_DrawRectangle(687, 70, 797, 106, BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawString_CN(730, 74, "day", &Font16_UTF8, BLACK, WHITE);
+    Paint_DrawString_CN(730, 74, "Sun", &Font16_UTF8, BLACK, WHITE);
 
 
     char Time_str[50]={0};
@@ -1287,54 +1287,19 @@ static void display_calendar_img(Time_data rtc_time, LunarInfo* month_info)
 
     char lunar_days_str[128] = {0};
     char calendar_days_str[16] = {0};
-    if (!file_exist) {
-        if (fp) fclose(fp);
-        if(wifi_is_connected())
-        {
-            esp_netif_ip_info_t ip_info;
-            esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-            esp_err_t ip_ret = esp_netif_get_ip_info(netif, &ip_info);
-            if (ip_ret != ESP_OK || ip_info.ip.addr == 0) {
-                ESP_LOGI("lunar", "The IP address for WiFi was not obtained. Please check your network!");
-                Paint_DrawString_CN(10, 110, "WiFi did not obtain the IP address, please check the network!", &Font24_UTF8, WHITE, BLACK);
-            } else {
-                ESP_LOGI("lunar", "The lunar calendar data is being obtained and saved through the network connection...");
-                Paint_DrawString_CN(10, 110, "Retrieving and saving lunar calendar data from the Internet...", &Font24_UTF8, WHITE, BLACK);
-                Refresh_page_clock();
-                fetch_and_save_lunar_month_to_sd(year_str, month_str, month_info);
-                fp = fopen(lunar_file, "r");
-                file_exist = (fp != NULL);
-                fclose(fp);
-                Paint_DrawRectangle(0, 110, EPD_WIDTH, EPD_HEIGHT, WHITE, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-            }
-        } else {
-            ESP_LOGI("lunar", "There is no network connection and no local files. Calendar acquisition failed...");
-            Paint_DrawString_CN(10, 110, "No network connection, no local files, calendar acquisition failed", &Font24_UTF8, WHITE, BLACK);
-        }
-    } 
-
     if(file_exist) {
+        fclose(fp);
         ESP_LOGI("lunar", "The local lunar data file has been found: %s", lunar_file);
-        lunar_days = load_lunar_month_from_sd(year_str, month_str, month_info);
-    } else if(wifi_is_connected()){
-        int y = atoi(year_str);
-        int m = atoi(month_str);
-        lunar_days = get_days_in_month(y, m);
-    } else {
-        lunar_days = 0;
+        load_lunar_month_from_sd(year_str, month_str, month_info);
     }
+    lunar_days = get_days_in_month(rtc_time.years + 2000, rtc_time.months);
     
     if(lunar_days) {
         int day = rtc_time.days;
-        if (day >= 1 && day <= lunar_days) {
+        if (month_info && day >= 1 && day <= lunar_days && month_info[day-1].ncWeek[0] != '\0') {
             LunarInfo* info = &month_info[day-1];
             ESP_LOGI("lunar", "Chinese calendar: %s %s%s%s festival: %s solar terms: %s week: %s", info->lunarDate, info->gzYear, info->IMonthCn, info->IDayCn, info->lunarFestival[0] ? info->lunarFestival : info->festival, info->Term, info->ncWeek);
             snprintf(lunar_days_str, sizeof(lunar_days_str), "%s%s%s  %s", info->gzYear, info->IMonthCn, info->IDayCn, info->ncWeek);
-            Paint_DrawString_CN(280, 27, lunar_days_str, &Font16_UTF8, WHITE, BLACK);
-        } else {
-            ESP_LOGW("lunar", "The lunar information for that day does not exist");
-            const char* fallback_week = (month_info && month_info[0].ncWeek[0]) ? month_info[0].ncWeek : "";
-            snprintf(lunar_days_str, sizeof(lunar_days_str), "The lunar calendar information for the current day does not exist %s", fallback_week);
             Paint_DrawString_CN(280, 27, lunar_days_str, &Font16_UTF8, WHITE, BLACK);
         }
 
@@ -1346,15 +1311,12 @@ static void display_calendar_img(Time_data rtc_time, LunarInfo* month_info)
         int x_size = 0;
         int y_size = 0;
         uint16_t x_or = 0;
-        const char* week_str[] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
-        if (month_info && month_info[0].ncWeek[0] != '\0') {
-            for (size_t i = 0; i < 7; i++) {
-                if (strcmp(month_info[0].ncWeek, week_str[i]) == 0) {
-                    x_size = (int)i;
-                    break;
-                }
-            }
-        }
+        struct tm first_day = {0};
+        first_day.tm_year = rtc_time.years + 100;
+        first_day.tm_mon = rtc_time.months - 1;
+        first_day.tm_mday = 1;
+        mktime(&first_day);
+        x_size = (first_day.tm_wday + 6) % 7;
         ESP_LOGI("lunar", "month start weekday index = %d", x_size + 1);
 
         for (int i = 0; i < lunar_days; i++) {
@@ -1376,16 +1338,16 @@ static void display_calendar_img(Time_data rtc_time, LunarInfo* month_info)
             Paint_DrawString_EN(x_or, y_e[y_size], calendar_days_str, &Font16, WHITE, BLACK);
 
             // Lunar/festival priority: Lunar Festival > festival > Term > IDayCn
-            if (month_info[i].lunarFestival[0] != '\0') {
+            if (month_info && month_info[i].lunarFestival[0] != '\0') {
                 x_or = reassignCoordinates_CH(x_e[x_size], month_info[i].lunarFestival, &Font12_UTF8);
                 Paint_DrawString_CN(x_or, y_c[y_size], month_info[i].lunarFestival, &Font12_UTF8, WHITE, BLACK);
-            } else if (month_info[i].festival[0] != '\0') {
+            } else if (month_info && month_info[i].festival[0] != '\0') {
                 x_or = reassignCoordinates_CH(x_e[x_size], month_info[i].festival, &Font12_UTF8);
                 Paint_DrawString_CN(x_or, y_c[y_size], month_info[i].festival, &Font12_UTF8, WHITE, BLACK);
-            } else if (month_info[i].Term[0] != '\0') {
+            } else if (month_info && month_info[i].Term[0] != '\0') {
                 x_or = reassignCoordinates_CH(x_e[x_size], month_info[i].Term, &Font12_UTF8);
                 Paint_DrawString_CN(x_or, y_c[y_size], month_info[i].Term, &Font12_UTF8, WHITE, BLACK);
-            } else if (month_info[i].IDayCn[0] != '\0') {
+            } else if (month_info && month_info[i].IDayCn[0] != '\0') {
                 if(strcmp(month_info[i].IDayCn, "初一") == 0) {
                     x_or = reassignCoordinates_CH(x_e[x_size], month_info[i].IMonthCn, &Font12_UTF8);
                     Paint_DrawString_CN(x_or, y_c[y_size], month_info[i].IMonthCn, &Font12_UTF8, WHITE, BLACK);

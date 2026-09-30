@@ -7,6 +7,8 @@
 #include "esp_err.h"
 #include "ff.h"        // FatFs API
 #include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 
 static const char *TAG = "_sdcard";
@@ -81,6 +83,25 @@ void _sdcard_init(void)
     ESP_LOGI(TAG, "SD card mounted at %s", SDlist);
     if (card_host != NULL) {
         sdmmc_card_print_info(stdout, card_host);
+    }
+
+    const char *required_dirs[] = {
+        "/sdcard/music",
+        "/sdcard/fiction",
+        "/sdcard/bookmarks",
+    };
+    for (size_t i = 0; i < sizeof(required_dirs) / sizeof(required_dirs[0]); i++) {
+        if (mkdir(required_dirs[i], 0755) != 0 && errno != EEXIST) {
+            ESP_LOGW(TAG, "Could not create %s: errno=%d", required_dirs[i], errno);
+        }
+    }
+
+    DIR *root = opendir(SDlist);
+    if (root) {
+        ESP_LOGI(TAG, "SD card root is readable");
+        closedir(root);
+    } else {
+        ESP_LOGE(TAG, "SD card mounted but root is not readable: errno=%d", errno);
     }
 }
 

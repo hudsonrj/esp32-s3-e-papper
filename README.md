@@ -15,7 +15,7 @@ internally unchanged so those integrations continue to work.
 
 - Flash offset: `0x0`
 - Flash size: 16 MB
-- SHA-256: `DD29F7CB849F0CF6B03E0D9088FF516877160CACBEF9D6722AE1DD64D1522CC4`
+- SHA-256: `CDEF4DC5377C284B0B51D78FA78D43168ED5B90687D2B59E40B69C527E258995`
 
 Example with esptool:
 
@@ -41,8 +41,16 @@ idf.py build
 The managed-component versions are pinned in `source/dependencies.lock`.
 
 The Gregorian calendar works offline and opens immediately. Lunar data remains
-optional and can be refreshed with a long press. The upstream weather service
-supports mainland China only.
+optional and can be refreshed with a long press. Weather uses IP-based location
+and Open-Meteo worldwide, without an API key.
+
+The firmware creates the SD-card folders used by the built-in applications:
+
+- `/music` for MP3/WAV audio and WAV recordings
+- `/fiction` for UTF-8 TXT documents
+- `/bookmarks` for reader progress and bookmarks
+
+The reader does not support PDF directly; convert PDFs to UTF-8 TXT first.
 
 ## Repository layout
 

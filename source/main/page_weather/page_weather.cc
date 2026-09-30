@@ -26,6 +26,7 @@
 #include "page_audio.h"
 
 #include "esp_spiffs.h"
+#include "esp_crt_bundle.h"
 
 extern uint8_t *Image_Mono;
 extern SemaphoreHandle_t rtc_mutex; 
@@ -65,6 +66,8 @@ static void Refresh_page_weather(void);
 static void display_weather_time(Time_data rtc_time);
 static char* getSdCardImageDirectory(const char* weather_desc);
 static void Relay_page_weather();
+static bool weather_fetch_global(Time_data rtc_time);
+static esp_err_t http_event_handler(esp_http_client_event_t *evt);
 
 static char province_list[MAX_PROVINCE][MAX_NAME_LEN];
 static int province_count = 0;
@@ -77,6 +80,46 @@ static char last_weather_json[WEATHER_JSON_MAX_SIZE] = {0};
 
 static bool force_refresh = true;
 static char prov_buf[MAX_NAME_LEN], city_buf[MAX_NAME_LEN];
+
+static bool http_get_json(const char *url, char *buffer, size_t size)
+{
+    buffer[0] = '\0';
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = 10000;
+    config.event_handler = http_event_handler;
+    config.user_data = buffer;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) return false;
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    return err == ESP_OK && status == 200 && buffer[0] != '\0' && strlen(buffer) < size;
+}
+
+static const char *weather_description(int code)
+{
+    if (code == 0) return "Clear";
+    if (code <= 3) return "Cloudy";
+    if (code == 45 || code == 48) return "Fog";
+    if (code >= 51 && code <= 67) return "Rain";
+    if (code >= 71 && code <= 77) return "Snow";
+    if (code >= 80 && code <= 82) return "Showers";
+    if (code >= 85 && code <= 86) return "Snow showers";
+    if (code >= 95) return "Thunderstorm";
+    return "Weather";
+}
+
+static const char *weather_image_key(int code)
+{
+    if (code == 0) return "晴";
+    if (code <= 3) return "多云";
+    if (code == 45 || code == 48) return "雾霾";
+    if (code >= 71 && code <= 77) return "下雪";
+    if (code >= 95) return "雷阵雨";
+    return "小雨";
+}
 
 
 // ========== SPIFFS initialization function (called once when the program starts) ==========
@@ -421,6 +464,108 @@ void weather_fetch_and_show_cached(const char* city_code, bool force_refresh)
     cJSON_Delete(root);
 }
 
+static bool weather_fetch_global(Time_data rtc_time)
+{
+    char *json = (char *)heap_caps_malloc(WEATHER_JSON_MAX_SIZE, MALLOC_CAP_SPIRAM);
+    if (!json) return false;
+
+    if (!http_get_json("http://ipwho.is/?fields=success,city,region,latitude,longitude", json, WEATHER_JSON_MAX_SIZE)) {
+        heap_caps_free(json);
+        return false;
+    }
+    cJSON *geo = cJSON_Parse(json);
+    cJSON *success = geo ? cJSON_GetObjectItem(geo, "success") : NULL;
+    cJSON *latitude = geo ? cJSON_GetObjectItem(geo, "latitude") : NULL;
+    cJSON *longitude = geo ? cJSON_GetObjectItem(geo, "longitude") : NULL;
+    cJSON *city = geo ? cJSON_GetObjectItem(geo, "city") : NULL;
+    cJSON *region = geo ? cJSON_GetObjectItem(geo, "region") : NULL;
+    if (!cJSON_IsTrue(success) || !cJSON_IsNumber(latitude) || !cJSON_IsNumber(longitude)) {
+        cJSON_Delete(geo);
+        heap_caps_free(json);
+        return false;
+    }
+    double lat = latitude->valuedouble;
+    double lon = longitude->valuedouble;
+    char location[64];
+    snprintf(location, sizeof(location), "%s%s%s",
+             cJSON_IsString(city) ? city->valuestring : "Current location",
+             cJSON_IsString(region) ? ", " : "",
+             cJSON_IsString(region) ? region->valuestring : "");
+    cJSON_Delete(geo);
+
+    char url[512];
+    snprintf(url, sizeof(url),
+             "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f"
+             "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
+             "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset"
+             "&timezone=auto&forecast_days=4", lat, lon);
+    if (!http_get_json(url, json, WEATHER_JSON_MAX_SIZE)) {
+        heap_caps_free(json);
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(json);
+    heap_caps_free(json);
+    if (!root) return false;
+    cJSON *current = cJSON_GetObjectItem(root, "current");
+    cJSON *daily = cJSON_GetObjectItem(root, "daily");
+    cJSON *times = daily ? cJSON_GetObjectItem(daily, "time") : NULL;
+    cJSON *codes = daily ? cJSON_GetObjectItem(daily, "weather_code") : NULL;
+    cJSON *highs = daily ? cJSON_GetObjectItem(daily, "temperature_2m_max") : NULL;
+    cJSON *lows = daily ? cJSON_GetObjectItem(daily, "temperature_2m_min") : NULL;
+    cJSON *sunrises = daily ? cJSON_GetObjectItem(daily, "sunrise") : NULL;
+    cJSON *sunsets = daily ? cJSON_GetObjectItem(daily, "sunset") : NULL;
+    if (!current || !cJSON_IsArray(times) || !cJSON_IsArray(codes) ||
+        !cJSON_IsArray(highs) || !cJSON_IsArray(lows)) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    display_weather_GUI();
+    display_weather_time(rtc_time);
+    Paint_DrawString_CN(52, 182, location, &Font16_UTF8, BLACK, WHITE);
+
+    cJSON *temp = cJSON_GetObjectItem(current, "temperature_2m");
+    cJSON *humidity = cJSON_GetObjectItem(current, "relative_humidity_2m");
+    cJSON *wind = cJSON_GetObjectItem(current, "wind_speed_10m");
+    cJSON *current_code = cJSON_GetObjectItem(current, "weather_code");
+    char text[50];
+    snprintf(text, sizeof(text), "%.0f C", cJSON_IsNumber(temp) ? temp->valuedouble : 0);
+    Paint_DrawString_CN(469, 34, text, &Font18_UTF8, WHITE, BLACK);
+    snprintf(text, sizeof(text), "%.0f%%", cJSON_IsNumber(humidity) ? humidity->valuedouble : 0);
+    Paint_DrawString_CN(663, 34, text, &Font18_UTF8, WHITE, BLACK);
+    snprintf(text, sizeof(text), "%.0f km/h", cJSON_IsNumber(wind) ? wind->valuedouble : 0);
+    Paint_DrawString_CN(469, 94, text, &Font18_UTF8, WHITE, BLACK);
+    Paint_DrawString_CN(663, 94, weather_description(cJSON_IsNumber(current_code) ? current_code->valueint : -1), &Font18_UTF8, WHITE, BLACK);
+
+    for (int i = 0; i < 4; ++i) {
+        cJSON *date = cJSON_GetArrayItem(times, i);
+        cJSON *code = cJSON_GetArrayItem(codes, i);
+        cJSON *high = cJSON_GetArrayItem(highs, i);
+        cJSON *low = cJSON_GetArrayItem(lows, i);
+        if (!cJSON_IsString(date) || !cJSON_IsNumber(code) || !cJSON_IsNumber(high) || !cJSON_IsNumber(low)) continue;
+        const char *short_date = strlen(date->valuestring) >= 10 ? date->valuestring + 5 : date->valuestring;
+        uint16_t center = 100 + i * 200;
+        uint16_t x = reassignCoordinates_CH(center, short_date, &Font18_UTF8);
+        Paint_DrawString_CN(x, 251, short_date, &Font18_UTF8, WHITE, BLACK);
+        char *image_path = getSdCardImageDirectory(weather_image_key(code->valueint));
+        if (image_path) GUI_ReadBmp(image_path, 46 + i * 200, 286);
+        const char *description = weather_description(code->valueint);
+        x = reassignCoordinates_CH(center, description, &Font18_UTF8);
+        Paint_DrawString_CN(x, 400, description, &Font18_UTF8, WHITE, BLACK);
+        snprintf(text, sizeof(text), "%.0f~%.0f C", high->valuedouble, low->valuedouble);
+        x = reassignCoordinates_CH(center, text, &Font18_UTF8);
+        Paint_DrawString_CN(x, 440, text, &Font18_UTF8, WHITE, BLACK);
+    }
+    cJSON *sunrise = cJSON_GetArrayItem(sunrises, 0);
+    cJSON *sunset = cJSON_GetArrayItem(sunsets, 0);
+    if (cJSON_IsString(sunrise)) Paint_DrawString_CN(469, 154, strlen(sunrise->valuestring) > 11 ? sunrise->valuestring + 11 : sunrise->valuestring, &Font18_UTF8, WHITE, BLACK);
+    if (cJSON_IsString(sunset)) Paint_DrawString_CN(663, 154, strlen(sunset->valuestring) > 11 ? sunset->valuestring + 11 : sunset->valuestring, &Font18_UTF8, WHITE, BLACK);
+    cJSON_Delete(root);
+    Forced_refresh_weather();
+    return true;
+}
+
 // Look up the sojson city code based on adcode
 int get_sojson_code_by_adcode(const char* adcode, char* sojson_code, size_t max_len) {
     FILE* f = fopen(CITY_FILE, "r");
@@ -757,25 +902,10 @@ void page_weather_city_select(void)
     while (1) {
         if (button == 12 || force_refresh) {
             force_refresh = false;
-            char adcode[16] = {0};
-            if (amap_ip_location_fetch_city_code(adcode, sizeof(adcode))) {
-                char sojson_code[16] = {0};
-                if (amap_ip_location_fetch_city_code_by_name(sojson_code, sizeof(sojson_code))) {
-                    ESP_LOGI("weather", "Automatic Location City Code (sojson): %s", sojson_code);
-                    display_weather_GUI();
-                    display_weather_time(rtc_time);
-                    weather_fetch_and_show_cached(sojson_code, true);
-                } else {
-                    ESP_LOGW("weather", "City matching failed");
-                    Paint_DrawString_CN(10, 25, "City matching failed", &Font24_UTF8, WHITE, BLACK);
-                    Paint_DrawString_CN(10, 80, "Double-click Button_Function/Boot to return to the main menu", &Font24_UTF8, WHITE, BLACK);
-                    Paint_DrawString_CN(10, 135, "Long press Button_Function and try again", &Font24_UTF8, WHITE, BLACK);
-                    Forced_refresh_weather();
-                }
-            } else {
+            if (!weather_fetch_global(rtc_time)) {
                 ESP_LOGW("weather", "Automatic positioning failed");
                 display_weather_init();
-                Paint_DrawString_CN(10, 25, "Automatic positioning failed", &Font24_UTF8, WHITE, BLACK);
+                Paint_DrawString_CN(10, 25, "Weather service unavailable", &Font24_UTF8, WHITE, BLACK);
                 Paint_DrawString_CN(10, 80, "Double-click Button_Function/Boot to return to the main menu", &Font24_UTF8, WHITE, BLACK);
                 Paint_DrawString_CN(10, 135, "Long press Button_Function and try again", &Font24_UTF8, WHITE, BLACK);
                 Forced_refresh_weather();
@@ -826,23 +956,7 @@ void weather_city_select_mode()
     if(!check_alarm(rtc_time.hours, rtc_time.minutes)){
         if(page_network_init_mode())
         {   
-            char adcode[16] = {0};
-            if (amap_ip_location_fetch_city_code(adcode, sizeof(adcode))) {
-                char sojson_code[16] = {0};
-                if (amap_ip_location_fetch_city_code_by_name(sojson_code, sizeof(sojson_code))) {
-                    ESP_LOGI("weather", "Automatic Location City Code (sojson): %s", sojson_code);
-                    display_weather_GUI();
-                    display_weather_time(rtc_time);
-                    weather_fetch_and_show_cached(sojson_code, true);
-                } else {
-                    ESP_LOGW("weather", "City matching failed");
-                    if (!sd_read_file_to_buffer(CLOCK_PARTIAL_PATH, Image_Mono, EPD_SIZE_MONO)) {
-                        ESP_LOGI("sdio", "The local cache file is not loaded and is displayed using the current buffer");
-                    }
-                    Paint_DrawString_CN(10, 137, "No matching city, update failed", &Font16_UTF8, WHITE, BLACK);
-                    Forced_refresh_weather();
-                }
-            } else {
+            if (!weather_fetch_global(rtc_time)) {
                 ESP_LOGW("weather", "Automatic positioning failed");
                 if (!sd_read_file_to_buffer(CLOCK_PARTIAL_PATH, Image_Mono, EPD_SIZE_MONO)) {
                     ESP_LOGI("sdio", "The local cache file is not loaded and is displayed using the current buffer");
@@ -989,11 +1103,6 @@ static void display_weather_time(Time_data rtc_time)
     snprintf(Time_str, sizeof(Time_str), "%04d-%02d-%02d %s", rtc_time.years + 2000, rtc_time.months, rtc_time.days, week_str[rtc_time.week]);
     Paint_DrawString_CN(10, 25, Time_str, &Font24_UTF8, WHITE, BLACK);
 
-    char Lunar_str[50]={0};
-    snprintf(Time_str, sizeof(Time_str), "%04d-%02d-%02d", rtc_time.years + 2000, rtc_time.months, rtc_time.days);
-    Lunar_calendar_acquisition(Lunar_str, 50, Time_str);
-    Paint_DrawString_CN(10, 80, Lunar_str, &Font24_UTF8, WHITE, BLACK);
-    
     snprintf(Time_str, sizeof(Time_str), "Update time: %02d:%02d", rtc_time.hours, rtc_time.minutes);
     Paint_DrawString_CN(10, 137, Time_str, &Font16_UTF8, WHITE, BLACK);
 }

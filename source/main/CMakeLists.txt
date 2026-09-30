@@ -33,6 +33,7 @@ idf_component_register(
         qmi8658_bsp
         esp-wifi-connect
         esp_http_client
+        mbedtls
         fatfs       
         vfs             
         esp_codec_dev
